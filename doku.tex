@@ -337,7 +337,9 @@ gives the three shares in per cent.
 Circle areas are good for showing orders of magnitude and poor for precise
 comparison. Where readers must compare values, \verb|\zkobars| is the better
 choice. Bars appear in the order of the data, which \texttt{prepare.py} sorts
-by total demand.
+by total demand. With \texttt{color=<column>}, each bar takes its colour
+from that column (a colour name per row), e.g.\ to match the colours of the same
+categories in a map.
 
 \begin{Verbatim}
 \zkobars[unit=GWh, width=8]{sites}{total-gwh}
@@ -532,7 +534,8 @@ Macro & Purpose \\
 \midrule
 Options & \texttt{unit}, \texttt{scale} (cm per $\sqrt{\text{unit}}$),
   \texttt{ring} (radius), \texttt{future} (factor column),
-  \texttt{width} (longest bar, cm), \texttt{mesh} (true/false) \\
+  \texttt{width} (longest bar, cm), \texttt{mesh} (true/false),
+  \texttt{color} (bars: column with a colour name per row) \\
 \bottomrule
 \end{tabularx}}
 

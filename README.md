@@ -50,4 +50,4 @@ prevent.
 
 ## Licence
 
-Code: MIT. Documentation: CC BY 4.0.
+Code: MIT (see `LICENSE`). Documentation: CC BY 4.0.

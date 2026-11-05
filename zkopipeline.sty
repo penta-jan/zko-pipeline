@@ -74,10 +74,11 @@
   future/.store in=\zko@future,   % column holding a growth factor (optional)
   width/.store in=\zko@width,     % bar charts: length of the longest bar in cm
   mesh/.is if=zko@mesh,           % draw the connecting lines between sites
+  color/.store in=\zko@colcol,    % bar charts: column holding a colour name per row
 }
 \newif\ifzko@mesh
 \newcommand\zko@defaults{\pgfkeys{/zko/.cd,unit={},scale=0.25,ring=4cm,
-  future={},width=7,mesh=true}}
+  future={},width=7,mesh=true,color={}}}
 
 % position of row i of n on the ring, starting at 12 o'clock, clockwise
 \newcommand\zko@angle[2]{\fpeval{90-360*(#1-1)/(#2)}}
@@ -179,23 +180,31 @@
 %% \zkobars[<options>]{<db>}{<column>}
 %%   Horizontal bars in the row order of the data (prepare.py sorts by size).
 %%   Better than circles when values must be compared precisely.
+%%   Option color=<column>: that column holds a colour name per row (e.g. the
+%%   colour of the same category in a map); otherwise all bars are zkodark.
 %% ---------------------------------------------------------------------
 \newcommand\zkobars[3][]{%
   \begingroup
   \zko@defaults\pgfkeys{/zko/.cd,#1}%
+  \ifx\zko@colcol\@empty\def\zko@ccol{#3}\else\let\zko@ccol\zko@colcol\fi
   \gdef\zko@max{0}\gdef\zkoresult{0}%
   \DTLforeach*{#2}{\zko@val=#3}{%
     \xdef\zko@max{\fpeval{max(\zko@max,\zko@val)}}%
     \xdef\zkoresult{\fpeval{\zkoresult+\zko@val}}}%
   \begin{tikzpicture}[font=\sffamily\footnotesize]
-    \DTLforeach*{#2}{\zko@name=name,\zko@val=#3}{%
-      \edef\zko@y{\fpeval{-0.6*\DTLcurrentindex}}%
-      \edef\zko@w{\fpeval{\zko@max > 0 ? \zko@width*\zko@val/\zko@max : 0}}%
-      \fill[zkodark!70] (0,\zko@y) rectangle (\zko@w cm,\zko@y+0.42);
-      \node[left] at (0,\zko@y+0.21) {\zko@name};
-      \node[right] at (\zko@w cm,\zko@y+0.21) {\zkonum{\zko@val}\,\zko@unit};
-    }
+    \edef\zko@tmp{\noexpand\zko@baritems{#2}{#3}{\zko@ccol}}\zko@tmp
   \end{tikzpicture}%
   \endgroup}
+
+\newcommand\zko@baritems[3]{%
+  \DTLforeach*{#1}{\zko@name=name,\zko@val=#2,\zko@col=#3}{%
+    \edef\zko@y{\fpeval{-0.6*\DTLcurrentindex}}%
+    \edef\zko@w{\fpeval{\zko@max > 0 ? \zko@width*\zko@val/\zko@max : 0}}%
+    \ifx\zko@colcol\@empty\def\zko@fill{zkodark!70}\else\let\zko@fill\zko@col\fi
+    \filldraw[fill=\zko@fill,draw=black!35,line width=0.3pt]
+      (0,\zko@y) rectangle (\zko@w cm,\zko@y+0.42);
+    \node[left] at (0,\zko@y+0.21) {\zko@name};
+    \node[right] at (\zko@w cm,\zko@y+0.21) {\zkonum{\zko@val}\,\zko@unit};
+  }}
 
 \endinput
