@@ -1,0 +1,539 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{fancyvrb}
+\usepackage{zkopipeline}
+\usepackage[hidelinks]{hyperref}
+\usetikzlibrary{positioning,arrows.meta}
+
+\sisetup{group-separator={,},group-minimum-digits=4}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6\baselineskip}
+\fvset{fontsize=\small,frame=single,framesep=6pt,rulecolor=\color{zkodark!40}}
+
+% ---------------------------------------------------------------------
+% Data: everything below is computed from these two files at compile time
+% ---------------------------------------------------------------------
+\DTLloaddb{sites}{data/sites.csv}
+\DTLloaddb{dict}{data/dictionary.csv}
+
+\title{From Block Data to Slides\\[4pt]
+  \large A reproducible pipeline for spatial energy analysis\\
+  with QGIS, Python, \LaTeX\ and TikZ}
+\author{Jan Suchanek}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}\noindent
+This document describes a pipeline that turns public, block-level energy data
+into maps, charts and in-text figures for reports and slide decks. It was
+developed in 2024--2025 for an internal analysis of energy use at eleven
+science and technology sites in Berlin. That study is not public; this
+document therefore uses \emph{synthetic data} for five fictitious sites.
+The document is its own minimal working example: every chart and every number
+in the text is computed from the data files when the document is compiled.
+\end{abstract}
+
+\tableofcontents
+
+% =====================================================================
+\section{Why a pipeline?}
+% =====================================================================
+
+The original question was simple: how much energy do the sites consume today,
+from which sources, and how much will they need once they are fully built?
+Answering it meant combining several public data sets, each at a different
+spatial level, for eleven very different sites, and presenting the result
+repeatedly as data were corrected and extended.
+
+Doing this by hand (copying numbers from spreadsheets into slides) fails in a
+predictable way: the numbers in the text drift away from the numbers in the
+charts. The pipeline avoids this by keeping a single source of truth.
+Every figure that appears in the output is \emph{computed} from one data file
+at compile time. When the data change, recompiling updates every chart and
+every sentence.
+
+Section~\ref{sec:lessons} lists what went wrong in the first version, and how
+this version prevents it. Those lessons are the main reason this document
+exists.
+
+% =====================================================================
+\section{Architecture}\label{sec:architecture}
+% =====================================================================
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[
+  font=\sffamily\small,
+  box/.style={draw=zkodark,rounded corners,fill=zkodark!6,align=center,
+              minimum width=2.6cm,minimum height=1.2cm},
+  file/.style={draw=zkolight,fill=zkolight!8,align=center,minimum width=2.6cm,
+               minimum height=0.8cm},
+  arr/.style={-{Stealth[length=6pt]},thick,zkodark}]
+  \node[box] (raw) {Public data\\\scriptsize Energieatlas, ALKIS,\\[-2pt]\scriptsize IHK, polygons};
+  \node[box,right=0.7cm of raw] (qgis) {QGIS\\\scriptsize spatial join};
+  \node[file,right=0.7cm of qgis] (blocks) {\ttfamily blocks.csv\\\scriptsize one row per block};
+  \node[box,below=0.9cm of blocks] (prep) {\ttfamily prepare.py\\\scriptsize aggregate, extrapolate};
+  \node[file,left=0.7cm of prep] (sites) {\ttfamily sites.csv\\\ttfamily dictionary.csv};
+  \node[box,left=0.7cm of sites] (tex) {\LaTeX\ + \ttfamily zkopipeline\\\scriptsize draw, compute, format};
+  \node[box,below=0.9cm of tex,fill=zkolight!15] (out) {Report, slides, posters};
+  \draw[arr] (raw) -- (qgis);
+  \draw[arr] (qgis) -- (blocks);
+  \draw[arr] (blocks) -- (prep);
+  \draw[arr] (prep) -- (sites);
+  \draw[arr] (sites) -- (tex);
+  \draw[arr] (tex) -- (out);
+\end{tikzpicture}
+\caption{The pipeline. Boxes are processing steps, pink frames are files.
+In the first version, the step \texttt{prepare.py} was a spreadsheet.}
+\label{fig:pipeline}
+\end{figure}
+
+\begin{table}[ht]
+\centering\small
+\begin{tabularx}{\linewidth}{@{}l l X@{}}
+\toprule
+Stage & Tool & Responsibility \\
+\midrule
+1 Raw data & public portals & Block-level consumption, buildings, businesses,
+  site boundaries as GeoJSON \\
+2 Spatial join & QGIS & Assign blocks to sites; export one row per block \\
+3 Preparation & Python & Aggregate per site, extrapolate missing values,
+  derive indicators; write the data dictionary \\
+4 Presentation & \LaTeX, TikZ, datatool & Draw maps and charts; compute
+  every number used in the text \\
+5 Output & PDF & Report, slide deck, one poster per site \\
+\bottomrule
+\end{tabularx}
+\caption{Stages and their responsibilities.}
+\end{table}
+
+Two rules hold the design together:
+\begin{enumerate}
+  \item \textbf{One direction.} Data flow from left to right only. Nothing is
+        typed into a later stage that could be derived from an earlier one.
+  \item \textbf{Machine format inside, local format outside.} All files use a
+        decimal point and full precision. Rounding and the decimal comma (for
+        German output) are applied only when a number is printed.
+\end{enumerate}
+
+% =====================================================================
+\section{Stage 1 and 2: data and spatial join}
+% =====================================================================
+
+\subsection{Sources}
+
+The Berlin \emph{Umweltatlas} and \emph{Energieatlas} publish electricity, gas
+and district heating consumption for each statistical city block. Further
+layers came from the property register (ALKIS: buildings, listed monuments),
+the chamber of commerce (IHK: registered businesses with size classes) and the
+state statistical office. The boundaries of the sites were available as
+GeoJSON polygons.
+
+Two properties of the block data shape everything that follows:
+\begin{itemize}
+  \item A block can \emph{have} consumption without a \emph{published} value.
+        Values are withheld when a block has very few consumers (data
+        protection), or when a supplier did not deliver data.
+  \item Withheld blocks are not a random sample. Few consumers per block often
+        means one large consumer, so withheld blocks tend to consume
+        \emph{more} than average.
+\end{itemize}
+
+\subsection{Selection rule: within or intersecting?}
+
+A site boundary rarely follows block boundaries. QGIS offers two natural
+selections: blocks lying \emph{within} the polygon, and blocks that
+\emph{intersect} it. Figure~\ref{fig:selection} shows the difference.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}[font=\sffamily\scriptsize,scale=0.75]
+  % blocks: 0 = outside, 1 = intersects, 2 = within
+  \foreach \row/\vals in {0/{0,1,1,1,0,0},1/{1,2,2,2,1,0},2/{1,2,2,2,2,1},
+                          3/{0,1,2,2,2,1},4/{0,0,1,1,1,0}}{
+    \foreach \v [count=\col] in \vals {
+      \ifcase\v
+        \draw[gray!40] (\col,-\row) rectangle ++(0.92,-0.92);
+      \or
+        \filldraw[draw=zkolight,fill=zkolight!25] (\col,-\row) rectangle ++(0.92,-0.92);
+      \or
+        \filldraw[draw=zkodark,fill=zkodark!45] (\col,-\row) rectangle ++(0.92,-0.92);
+      \fi
+    }}
+  \draw[very thick,zkodark,rounded corners=6pt]
+    (1.55,-0.5) -- (4.6,-0.3) -- (6.4,-1.6) -- (6.5,-3.2) -- (4.2,-4.6)
+    -- (2.6,-4.3) -- (1.3,-2.9) -- cycle;
+  \node[anchor=west,align=left] at (7.4,-1.2)
+    {\tikz\filldraw[draw=zkodark,fill=zkodark!45] (0,0) rectangle (0.3,0.3); within\\[3pt]
+     \tikz\filldraw[draw=zkolight,fill=zkolight!25] (0,0) rectangle (0.3,0.3); intersects\\[3pt]
+     \tikz\draw[very thick,zkodark] (0,0.15) -- (0.3,0.15); site boundary};
+\end{tikzpicture}
+\caption{Schematic selection of blocks by a site boundary.}
+\label{fig:selection}
+\end{figure}
+
+\emph{Within} underestimates (it drops blocks that are partly on the site);
+\emph{intersects} overestimates (it adds blocks that are mostly outside).
+The original study used both, compared the results, and redrew one boundary by
+hand where neither rule was acceptable. In this example, \texttt{prepare.py}
+uses both relations; the rule is a single constant (\texttt{INCLUDE}) so that
+its effect can be tested.
+
+The QGIS export is a plain CSV with one row per block: the site it belongs to,
+the relation (\texttt{within} or \texttt{intersects}), area, number of
+buildings, and for each energy carrier a status (\texttt{reported},
+\texttt{suppressed}, \texttt{none}) and the value where reported.
+
+% =====================================================================
+\section{Stage 3: preparation}\label{sec:prepare}
+% =====================================================================
+
+The script \texttt{data/prepare.py} replaces what was a spreadsheet in the
+first version. It has no dependencies beyond the Python standard library.
+
+\subsection{Extrapolating withheld values}
+
+For each site $s$ and carrier $c$, let $B_{s,c}$ be the blocks with
+consumption and $R_{s,c}\subseteq B_{s,c}$ the blocks with a reported value
+$e_b$. The estimate assumes that withheld blocks consume as much as the
+average reported block:
+\begin{equation}
+  \hat E_{s,c} \;=\; \frac{1}{|R_{s,c}|}\sum_{b\in R_{s,c}} e_b \;\cdot\; |B_{s,c}|
+\end{equation}
+This estimator has two known weaknesses, both documented in the output:
+\begin{itemize}
+  \item Because withheld blocks tend to be larger consumers, $\hat E$ is
+        biased \emph{downwards}.
+  \item If no block of a site reports a value ($|R_{s,c}|=0$), the estimate is
+        zero although consumption exists. In the synthetic data this happens
+        for district heating at \emph{Old Airfield}: heat is used in
+        \DTLforeach*{sites}{\i=id,\hb=heat-blocks}{\ifthenelse{\equal{\i}{c}}{\hb}{}}
+        blocks, but none reports a value.
+\end{itemize}
+
+\subsection{Emissions}
+
+CO$_2$ emissions use one emission factor per carrier, in tonnes per GWh of
+supplied energy. The values are those of the state energy balance used in the
+original project; they are constants at the top of the script.
+
+\begin{center}\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Carrier & t\,CO$_2$/GWh \\
+\midrule
+Electricity & 365.22 \\
+Natural gas & 202.77 \\
+District heating & 219.65 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Build-out factor}
+
+To estimate demand at full build-out, the current building density $d_s$
+(buildings per hectare) is compared with a target density $d^\ast = 10$, the
+density of the most built-up site in the original study:
+\begin{equation}
+  g_s = \max\!\left(1,\ \frac{d^\ast}{d_s}\right), \qquad
+  E_s^{\text{future}} = g_s \cdot E_s
+\end{equation}
+The factor is an upper bound: it counts buildings, not floor area, and it
+assumes that new buildings consume like existing ones. The $\max(1,\cdot)$ is
+essential; without it, sites that are already denser than the target would
+\emph{shrink} in the projection (see Section~\ref{sec:lessons}).
+
+\subsection{Output: data and dictionary}
+
+The script writes two files. \texttt{sites.csv} has one row per site and one
+column per quantity, sorted by total demand. \texttt{dictionary.csv} describes
+every column. Both are read by \LaTeX; the table below is typeset directly
+from the dictionary.
+
+% =====================================================================
+\section{The data dictionary}\label{sec:dict}
+% =====================================================================
+
+{\small
+\begin{longtable}{@{}>{\ttfamily}l p{7.6cm} l l@{}}
+\toprule
+\normalfont Column & Description & Unit & Source \\
+\midrule
+\endhead
+\DTLforeach*{dict}{\dcol=column,\ddesc=description,\dunit=unit,\dsrc=source}{%
+  \DTLiffirstrow{}{\\}\dcol & \ddesc & \dunit & \dsrc}\\
+\bottomrule
+\end{longtable}}
+
+In the first version the dictionary lived in two extra rows at the bottom of
+the data file (description and source), which the drawing macros skipped with
+a numeric test. Moving it to its own file keeps the data table rectangular and
+purely numeric, which every tool can read without special cases.
+
+% =====================================================================
+\section{Stage 4: drawing with \texttt{zkopipeline}}\label{sec:draw}
+% =====================================================================
+
+The package needs only the data loaded with \texttt{datatool}:
+\begin{Verbatim}
+\usepackage{zkopipeline}
+\DTLloaddb{sites}{data/sites.csv}
+\end{Verbatim}
+
+\subsection{Circle map}
+
+\verb|\zkomap| places the sites on a ring, connected by thin lines (the
+network motif of the original project). The \emph{area} of each circle is
+proportional to the value, so the radius grows with its square root. The
+centre shows sum and mean.
+
+\begin{Verbatim}
+\zkomap[unit=GWh, scale=0.12]{sites}{total-gwh}
+\end{Verbatim}
+
+\begin{center}
+\zkomap[unit=GWh,scale=0.12]{sites}{total-gwh}
+\end{center}
+
+\subsection{Projection overlay}
+
+With \texttt{future=<column>}, each value is multiplied by the factor in that
+column and drawn as a dashed circle. Sites whose factor is 1 get no overlay.
+
+\begin{Verbatim}
+\zkomap[unit=GWh, scale=0.08, future=factor]{sites}{total-gwh}
+\end{Verbatim}
+
+\begin{center}
+\zkomap[unit=GWh,scale=0.08,future=factor]{sites}{total-gwh}
+\end{center}
+% keep the totals of this map for the text (the next chart overwrites \zkoresult)
+\let\sitesnow\zkoresult \let\sitesfuture\zkofutureresult
+
+\subsection{Energy mix}
+
+\verb|\zkopies| draws one pie per site with three shares, here electricity,
+gas and district heating. The pie area is proportional to the total. The label
+gives the three shares in per cent.
+
+\begin{Verbatim}
+\zkopies[scale=0.12]{sites}{el-gwh}{gas-gwh}{heat-gwh}
+\end{Verbatim}
+
+\begin{center}
+\zkopies[scale=0.12]{sites}{el-gwh}{gas-gwh}{heat-gwh}
+\end{center}
+
+\subsection{Bar chart}
+
+Circle areas are good for showing orders of magnitude and poor for precise
+comparison. Where readers must compare values, \verb|\zkobars| is the better
+choice. Bars appear in the order of the data, which \texttt{prepare.py} sorts
+by total demand.
+
+\begin{Verbatim}
+\zkobars[unit=GWh, width=8]{sites}{total-gwh}
+\end{Verbatim}
+
+\begin{center}
+\zkobars[unit=GWh,width=8]{sites}{total-gwh}
+\end{center}
+
+% =====================================================================
+\section{Numbers in the text}\label{sec:numbers}
+% =====================================================================
+
+Every drawing macro leaves its results in global macros: \verb|\zkoresult|
+holds the sum, \verb|\zkofutureresult| the projected sum. The text then
+computes with these values instead of copying them.
+
+\subsection{An example paragraph}
+
+\zkototal{sites}{gas-gwh}{\gas}%
+\zkototal{sites}{co2-t}{\co}%
+The source of the following paragraph contains no typed number:
+
+\begin{quote}
+The five sites draw \zkonum{\sitesnow}~GWh of energy per year, of which natural
+gas accounts for \zkoshare{\gas}{\sitesnow}. Their supply causes about
+\zkonum[0]{\co/1000}~kt of CO$_2$. At full build-out, demand could rise to
+\zkonum{\sitesfuture}~GWh, a change of \zkogrowth{\sitesnow}{\sitesfuture}, or
+\zkoratio{\sitesnow}{\sitesfuture} times today's level.
+\end{quote}
+
+\begin{Verbatim}
+\zkototal{sites}{gas-gwh}{\gas}  \zkototal{sites}{co2-t}{\co}
+The five sites draw \zkonum{\sitesnow}~GWh of energy per year, of which
+natural gas accounts for \zkoshare{\gas}{\sitesnow}. Their supply causes
+about \zkonum[0]{\co/1000}~kt of CO$_2$. At full build-out, demand
+could rise to \zkonum{\sitesfuture}~GWh, a change of
+\zkogrowth{\sitesnow}{\sitesfuture}, or \zkoratio{\sitesnow}{\sitesfuture} times ...
+\end{Verbatim}
+
+The values \verb|\sitesnow| and \verb|\sitesfuture| were taken from the
+projection map above, directly after drawing it:
+\verb|\let\sitesnow\zkoresult \let\sitesfuture\zkofutureresult|.
+They must be saved at once, because the next chart overwrites
+\verb|\zkoresult|.
+
+\subsection{Share, growth, ratio}
+
+Three macros, three different questions. Keeping them apart by name prevents
+the most expensive error of the first version.
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Macro & Computes & Example: from 2,145 to 11,026 \\
+\midrule
+\verb|\zkoshare{a}{b}|  & $100\cdot a/b$ & \zkoshare{11026}{2145} \quad(share; wrong here)\\
+\verb|\zkogrowth{a}{b}| & $100\cdot (b-a)/a$ & \zkogrowth{2145}{11026} \quad(correct)\\
+\verb|\zkoratio{a}{b}|  & $b/a$ & \zkoratio{2145}{11026} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each macro takes an optional first argument to store the unrounded result,
+e.g.\ \verb|\zkogrowth[\g]{a}{b}|, and prints \emph{n/a} instead of dividing
+by zero.
+
+\subsection{Rounding and locale}
+
+Values are rounded only when printed, by \texttt{siunitx}. The same value can
+be shown in English or German notation by changing one setting:
+
+\begin{center}\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Setting & Output of \verb|\zkonum[2]{\sitesfuture}| \\
+\midrule
+English (this document) & \zkonum[2]{\sitesfuture} \\
+German & {\sisetup{output-decimal-marker={,},group-separator={.}}\zkonum[2]{\sitesfuture}} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{Verbatim}
+\sisetup{output-decimal-marker={,}, group-separator={.}}
+\end{Verbatim}
+
+% =====================================================================
+\section{Lessons learned}\label{sec:lessons}
+% =====================================================================
+
+The first version produced a 121-slide deck, a report and eleven posters. A
+review of that version found the following errors. None was a mistake in the
+data; each was a weakness of the pipeline. The right column shows how this
+version rules it out.
+
+{\small
+\begin{longtable}{@{}p{4.6cm}p{5.2cm}p{5.2cm}@{}}
+\toprule
+Symptom & Cause & Remedy in this version \\
+\midrule
+\endhead
+A 5.14-fold increase was reported as ``growth of 514\,\%'' instead of 414\,\%. &
+One macro computed $a/b$ and was used both for shares and for growth. &
+Separate, explicitly named macros: \verb|\zkoshare|, \verb|\zkogrowth|,
+\verb|\zkoratio|. \\
+\addlinespace
+Three percentages in the text did not match the charts. &
+Numbers had been typed into the text from an earlier data version. &
+No typed numbers: every value in the text is read or computed from the data
+(Section~\ref{sec:numbers}). \\
+\addlinespace
+Projected growth shown as +144\,\% instead of +137.9\,\%. &
+Values were rounded to 0.1\,TWh \emph{before} dividing. &
+Full precision in all files and computations; rounding only on output. \\
+\addlinespace
+Nine dated copies of the data file. &
+Versioning by file name; old numbers survived in old copies. &
+One data file, generated by a script and versioned with Git. \\
+\addlinespace
+Derived columns could not be reproduced. &
+The spreadsheet kept values only; the formulas survived as text descriptions. &
+\texttt{prepare.py} computes every derived column; the dictionary documents it. \\
+\addlinespace
+Mixed decimal separators in the output; conversion code in every macro. &
+Data stored with decimal comma, but TikZ and \texttt{fp} need a point. &
+Decimal point in all files; \texttt{siunitx} formats the output. \\
+\addlinespace
+Dense sites shown as ``could grow by $-3\,\%$''; the projected total too low. &
+Build-out factors below 1 were applied and summed. &
+$g = \max(1, d^\ast/d)$ in \texttt{prepare.py} (Section~\ref{sec:prepare}). \\
+\addlinespace
+Electricity use (GWh) and PV capacity (MWp) both labelled ``GW''. &
+One unit argument for a chart that combined two quantities. &
+Each column has its own unit in the dictionary; one quantity per chart. \\
+\addlinespace
+``Division by zero'' for a site without data. &
+The zero test compared strings: \texttt{0.00} is not \texttt{0}. &
+Numerical tests only: \verb|\zkotest{a == 0}{...}{...}|. \\
+\addlinespace
+``Dimension too large'' with large values (e.g.\ tonnes of CO$_2$). &
+Comparisons via \verb|\ifdim|, limited to about 16,383. &
+All arithmetic and comparisons with \verb|\fpeval|. \\
+\addlinespace
+Errors with some \TeX\ installations only. &
+\LaTeX\ macros (site names) inside a data file, read before they were defined. &
+Data files contain plain text only. \\
+\addlinespace
+Duplicate labels, broken cross-references (``Folie ??''). &
+Frames copied to create variants, labels copied with them. &
+Labels derived from a single naming scheme; warnings treated as errors. \\
+\bottomrule
+\end{longtable}}
+
+% =====================================================================
+\section{Building}\label{sec:build}
+% =====================================================================
+
+\begin{Verbatim}
+python3 data/make_example_data.py   # synthetic blocks.csv (skip with real data)
+python3 data/prepare.py             # sites.csv and dictionary.csv
+pdflatex doku.tex                   # twice, for the table of contents
+\end{Verbatim}
+
+Requirements: Python~3.8 or later (standard library only) and a current \TeX\
+distribution with \texttt{tikz}, \texttt{datatool}, \texttt{siunitx}. Tested
+with \TeX\ Live 2023 (\texttt{datatool} 2.32) and \texttt{pdflatex}.
+
+To use real data, replace \texttt{blocks.csv} by the QGIS export (same
+columns) and adjust \texttt{SITE\_NAMES} in \texttt{prepare.py}.
+
+% =====================================================================
+\appendix
+\section{Macro reference}
+% =====================================================================
+
+{\small
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+\toprule
+Macro & Purpose \\
+\midrule
+\verb|\zkomap[opt]{db}{col}| & Circle map; stores \verb|\zkoresult|,
+  with \texttt{future} also \verb|\zkofutureresult| \\
+\verb|\zkopies[opt]{db}{c1}{c2}{c3}| & One pie per site with three shares \\
+\verb|\zkobars[opt]{db}{col}| & Horizontal bars in data order \\
+\verb|\zkototal{db}{col}{\cs}| & Column sum, full precision, into \verb|\cs| \\
+\verb|\zkonum[digits]{expr}| & Evaluate and print a number, rounded \\
+\verb|\zkoshare[\cs]{a}{b}| & $100\,a/b$ in per cent \\
+\verb|\zkogrowth[\cs]{a}{b}| & $100\,(b-a)/a$ in per cent, with sign \\
+\verb|\zkoratio[\cs]{a}{b}| & $b/a$ \\
+\verb|\zkotest{expr}{true}{false}| & Numerical condition \\
+\midrule
+Options & \texttt{unit}, \texttt{scale} (cm per $\sqrt{\text{unit}}$),
+  \texttt{ring} (radius), \texttt{future} (factor column),
+  \texttt{width} (longest bar, cm), \texttt{mesh} (true/false) \\
+\bottomrule
+\end{tabularx}}
+
+\end{document}

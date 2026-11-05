@@ -1,0 +1,24 @@
+column,description,unit,source
+id,Short identifier of the site,,input
+name,Name of the site,,input
+blocks,Blocks assigned to the site (within or intersecting),count,QGIS
+area-ha,Total area of assigned blocks,ha,QGIS
+buildings,Number of buildings,count,QGIS (ALKIS)
+density,Buildings per hectare: buildings / area-ha,1/ha,computed
+el-blocks,Blocks with electricity consumption,count,QGIS (Energieatlas)
+el-reported,Blocks with a reported electricity value,count,QGIS (Energieatlas)
+el-gwh-reported,Sum of reported electricity consumption,GWh,computed
+el-gwh,Extrapolated electricity consumption: mean per reported block times el-blocks,GWh,computed
+gas-blocks,Blocks with natural gas consumption,count,QGIS (Energieatlas)
+gas-reported,Blocks with a reported natural gas value,count,QGIS (Energieatlas)
+gas-gwh-reported,Sum of reported natural gas consumption,GWh,computed
+gas-gwh,Extrapolated natural gas consumption: mean per reported block times gas-blocks,GWh,computed
+heat-blocks,Blocks with district heating consumption,count,QGIS (Energieatlas)
+heat-reported,Blocks with a reported district heating value,count,QGIS (Energieatlas)
+heat-gwh-reported,Sum of reported district heating consumption,GWh,computed
+heat-gwh,Extrapolated district heating consumption: mean per reported block times heat-blocks,GWh,computed
+total-gwh,Extrapolated total supply: el-gwh + gas-gwh + heat-gwh,GWh,computed
+co2-t,"CO2 from total supply, using emission factors per carrier",t,computed
+factor-raw,Target density / density (may be below 1),,computed
+factor,"Build-out factor: max(1, factor-raw)",,computed
+total-gwh-future,Total supply at full build-out: total-gwh times factor,GWh,computed
